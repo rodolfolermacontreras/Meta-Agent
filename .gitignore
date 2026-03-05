@@ -1,0 +1,43 @@
+# Secrets
+.env
+*.env
+.env.*
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+dist/
+build/
+.venv/
+venv/
+env/
+*.pkl
+*.joblib
+
+# Jupyter
+.ipynb_checkpoints/
+*.ipynb_checkpoints
+
+# Data (large files — document location in registry instead)
+*.csv.gz
+*.parquet
+projects/*/data/raw/*.csv
+projects/*/data/raw/*.parquet
+projects/*/data/raw/*.xlsx
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/settings.json
+.idea/
+
+# Outputs (keep HTML charts and summary.md, ignore large model files)
+projects/*/outputs/*.pkl
+projects/*/outputs/*.joblib
+projects/*/outputs/simulation_results.csv
