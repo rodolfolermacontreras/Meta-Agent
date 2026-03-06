@@ -184,13 +184,44 @@ class DataAnalyst:
             importance_path, index=False
         )
 
+        output_files = [
+            "predictions.csv",
+            "model_eval.csv",
+            "feature_importance.csv",
+        ]
+
+        # SHAP values — fully optional, graceful skip if not installed
+        try:
+            import shap  # lazy import
+            explainer = shap.TreeExplainer(model)
+            shap_values = explainer.shap_values(X_test)
+
+            # Handle different SHAP output shapes:
+            # - list of arrays (one per class) → use class 1
+            # - 3D array (samples, features, classes) → use class 1
+            # - 2D array (samples, features) → use directly
+            if isinstance(shap_values, list):
+                sv = np.abs(np.array(shap_values[1])).mean(axis=0)
+            elif shap_values.ndim == 3:
+                sv = np.abs(shap_values[:, :, 1]).mean(axis=0)
+            else:
+                sv = np.abs(shap_values).mean(axis=0)
+
+            # Ensure 1D
+            sv = np.asarray(sv).flatten()
+
+            self._plot_shap_summary(
+                feature_names=feature_cols,
+                mean_abs_shap=sv,
+                chart_path=output_dir / "shap_summary.html",
+            )
+            output_files.append("shap_summary.html")
+        except ImportError:
+            pass  # SHAP not installed — skip gracefully
+
         return {
             "status": "complete",
-            "outputs": [
-                "predictions.csv",
-                "model_eval.csv",
-                "feature_importance.csv",
-            ],
+            "outputs": output_files,
             "metrics": {
                 "accuracy": round(acc, 4),
                 "f1_weighted": round(f1, 4),
@@ -199,56 +230,105 @@ class DataAnalyst:
 
     def run_monte_carlo(self, data_dir: Path, output_dir: Path,
                         config: dict[str, Any] | None = None) -> dict[str, Any]:
-        """Run a Monte Carlo simulation.
+        """Run a full Monte Carlo simulation.
 
-        Uses scipy for sampling. Parameters come from *config* or defaults.
+        Fits distributions to input variables (or uses config defaults),
+        runs 50 000 iterations, and produces a percentile table, a
+        distribution histogram, and a tornado (sensitivity) chart.
 
         Args:
             data_dir: Directory containing raw/processed data.
             output_dir: Where to write outputs.
-            config: Simulation parameters.
+            config: Simulation parameters. May contain ``variables`` list
+                and ``n_simulations``.
 
         Returns:
             Summary dict with percentile statistics.
         """
-        n_simulations = 10_000
+        from scipy import stats as sp_stats  # lazy import
+
         params = config or {}
-
-        # Default: simple revenue model  revenue = price * quantity
-        price_mean = float(params.get("price_mean", 100))
-        price_std = float(params.get("price_std", 15))
-        qty_mean = float(params.get("qty_mean", 500))
-        qty_std = float(params.get("qty_std", 80))
-
+        n_simulations = int(params.get("n_simulations", 50_000))
         rng = np.random.default_rng(42)
-        prices = rng.normal(price_mean, price_std, n_simulations)
-        quantities = rng.normal(qty_mean, qty_std, n_simulations)
-        revenue = prices * quantities
 
-        stats = {
-            "mean": float(np.mean(revenue)),
-            "median": float(np.median(revenue)),
-            "std": float(np.std(revenue)),
-            "P5": float(np.percentile(revenue, 5)),
-            "P25": float(np.percentile(revenue, 25)),
-            "P75": float(np.percentile(revenue, 75)),
-            "P95": float(np.percentile(revenue, 95)),
+        # --- Define input variables ---
+        variables = params.get("variables", None)
+        if variables is None:
+            # Default: simple revenue model — revenue = price × quantity
+            variables = [
+                {"name": "price", "mean": 100, "std": 15},
+                {"name": "quantity", "mean": 500, "std": 80},
+            ]
+
+        # --- Fit / sample each variable ---
+        samples: dict[str, np.ndarray] = {}
+        for var in variables:
+            name = var["name"]
+            mean = float(var.get("mean", 100))
+            std = float(var.get("std", 10))
+            dist_type = var.get("distribution", "normal").lower()
+
+            if dist_type == "lognormal":
+                # Convert mean/std to lognormal mu/sigma
+                sigma2 = np.log(1 + (std / mean) ** 2)
+                mu = np.log(mean) - sigma2 / 2
+                samples[name] = rng.lognormal(mu, np.sqrt(sigma2), n_simulations)
+            elif dist_type == "uniform":
+                lo = mean - std * np.sqrt(3)
+                hi = mean + std * np.sqrt(3)
+                samples[name] = rng.uniform(lo, hi, n_simulations)
+            else:  # default normal
+                samples[name] = rng.normal(mean, std, n_simulations)
+
+        # --- Compute outcome ---
+        if len(samples) >= 2:
+            keys = list(samples.keys())
+            outcome = samples[keys[0]] * samples[keys[1]]
+            for k in keys[2:]:
+                outcome = outcome + samples[k]
+        else:
+            outcome = list(samples.values())[0]
+
+        # --- Statistics ---
+        percentiles = [5, 10, 25, 50, 75, 90, 95, 99]
+        stats: dict[str, float] = {
+            "mean": float(np.mean(outcome)),
+            "median": float(np.median(outcome)),
+            "std": float(np.std(outcome)),
         }
+        for p in percentiles:
+            stats[f"P{p}"] = float(np.percentile(outcome, p))
 
-        # Save outputs
-        sim_path = output_dir / "simulation_results.csv"
-        pd.DataFrame({
-            "price": prices,
-            "quantity": quantities,
-            "revenue": revenue,
-        }).to_csv(sim_path, index=False)
+        # --- Sensitivity: Pearson correlation of each input vs outcome ---
+        sensitivities: dict[str, float] = {}
+        for name, vals in samples.items():
+            corr = float(np.corrcoef(vals, outcome)[0, 1])
+            sensitivities[name] = corr
 
-        stats_path = output_dir / "simulation_stats.csv"
-        pd.DataFrame([stats]).to_csv(stats_path, index=False)
+        # --- Save outputs ---
+        # Simulation results (sampled to 10k rows to keep file size sane)
+        sample_idx = rng.choice(n_simulations, min(10_000, n_simulations), replace=False)
+        sim_df = pd.DataFrame({k: v[sample_idx] for k, v in samples.items()})
+        sim_df["outcome"] = outcome[sample_idx]
+        sim_df.to_csv(output_dir / "simulation_results.csv", index=False)
+
+        # Stats CSV
+        pd.DataFrame([stats]).to_csv(output_dir / "simulation_stats.csv", index=False)
+
+        # Plotly distribution chart with percentile lines
+        self._plot_distribution(outcome, stats, output_dir / "distribution_chart.html")
+
+        # Plotly tornado chart
+        self._plot_tornado(sensitivities, output_dir / "tornado_chart.html")
 
         return {
             "status": "complete",
-            "outputs": ["simulation_results.csv", "simulation_stats.csv"],
+            "outputs": [
+                "simulation_results.csv",
+                "simulation_stats.csv",
+                "distribution_chart.html",
+                "tornado_chart.html",
+            ],
             "metrics": {k: round(v, 2) for k, v in stats.items()},
         }
 
@@ -483,7 +563,11 @@ class DataAnalyst:
     @staticmethod
     def _forecast_exp_smoothing(train: pd.DataFrame,
                                 test: pd.DataFrame) -> dict[str, Any]:
-        """Simple exponential smoothing fallback."""
+        """Simple exponential smoothing fallback.
+
+        # TODO: horizon not used in exp-smoothing fallback — forecast only
+        # covers test period, not future periods beyond the data.
+        """
         alpha = 0.3
         level = float(train["value"].iloc[0])
         for val in train["value"]:
@@ -549,47 +633,183 @@ class DataAnalyst:
     def _generate_streamlit_app(numeric_cols: list[str],
                                 date_col: str | None,
                                 all_cols: list[str]) -> str:
-        """Return the source code for a Streamlit dashboard app."""
+        """Return the source code for a Streamlit dashboard app.
+
+        Uses ``textwrap.dedent`` for cleaner template generation.
+        """
+        import textwrap
+
         num_repr = repr(numeric_cols[:5])
         date_repr = repr(date_col)
-        return f'''"""Auto-generated Streamlit dashboard."""
 
-import streamlit as st
-import pandas as pd
-import plotly.express as px
-from pathlib import Path
+        # Build the date-slider block only when a date column exists
+        if date_col:
+            date_block = textwrap.dedent(f"""\
+                # --- Date Range Slider ---
+                date_col = {date_repr}
+                if date_col and date_col in df.columns:
+                    df[date_col] = pd.to_datetime(df[date_col])
+                    min_date = df[date_col].min().date()
+                    max_date = df[date_col].max().date()
+                    date_range = st.date_input(
+                        "Date range",
+                        value=(min_date, max_date),
+                        min_value=min_date,
+                        max_value=max_date,
+                    )
+                    if len(date_range) == 2:
+                        df = df[
+                            (df[date_col] >= pd.Timestamp(date_range[0]))
+                            & (df[date_col] <= pd.Timestamp(date_range[1]))
+                        ]
 
-st.set_page_config(page_title="Project Dashboard", layout="wide")
-st.title("📊 Project Dashboard")
+                    # --- Time Series ---
+                    ts_col = st.selectbox("Metric for time series", numeric_cols, index=0)
+                    fig_ts = px.line(
+                        df.sort_values(date_col), x=date_col, y=ts_col,
+                        title=f"{{ts_col}} over time",
+                    )
+                    st.plotly_chart(fig_ts, use_container_width=True)
+            """)
+        else:
+            date_block = ""
 
-data_path = Path(__file__).parent / "data.csv"
-df = pd.read_csv(data_path)
+        template = textwrap.dedent(f"""\
+            \"\"\"Auto-generated Streamlit dashboard.\"\"\"
 
-# --- KPI Row ---
-numeric_cols = {num_repr}
-cols = st.columns(len(numeric_cols[:4]) or 1)
-for i, col_name in enumerate(numeric_cols[:4]):
-    with cols[i]:
-        st.metric(col_name, f"{{df[col_name].mean():.2f}}", f"max: {{df[col_name].max():.2f}}")
+            import streamlit as st
+            import pandas as pd
+            import plotly.express as px
+            from pathlib import Path
 
-# --- Time Series (if date column found) ---
-date_col = {date_repr}
-if date_col and date_col in df.columns:
-    df[date_col] = pd.to_datetime(df[date_col])
-    ts_col = st.selectbox("Metric for time series", numeric_cols, index=0)
-    fig_ts = px.line(df.sort_values(date_col), x=date_col, y=ts_col, title=f"{{ts_col}} over time")
-    st.plotly_chart(fig_ts, use_container_width=True)
+            st.set_page_config(page_title="Project Dashboard", layout="wide")
+            st.title("📊 Project Dashboard")
 
-# --- Distribution ---
-if numeric_cols:
-    dist_col = st.selectbox("Distribution column", numeric_cols, index=0, key="dist")
-    fig_dist = px.histogram(df, x=dist_col, title=f"Distribution of {{dist_col}}")
-    st.plotly_chart(fig_dist, use_container_width=True)
+            data_path = Path(__file__).parent / "data.csv"
+            df = pd.read_csv(data_path)
 
-# --- Data Table ---
-st.subheader("Data Table")
-st.dataframe(df, use_container_width=True)
-'''
+            # --- KPI Row ---
+            numeric_cols = {num_repr}
+            cols = st.columns(len(numeric_cols[:4]) or 1)
+            for i, col_name in enumerate(numeric_cols[:4]):
+                with cols[i]:
+                    st.metric(
+                        col_name,
+                        f"{{df[col_name].mean():.2f}}",
+                        f"max: {{df[col_name].max():.2f}}",
+                    )
+
+        """)
+
+        template += date_block
+
+        template += textwrap.dedent(f"""\
+            # --- Distribution ---
+            if numeric_cols:
+                dist_col = st.selectbox("Distribution column", numeric_cols, index=0, key="dist")
+                fig_dist = px.histogram(df, x=dist_col, title=f"Distribution of {{dist_col}}")
+                st.plotly_chart(fig_dist, use_container_width=True)
+
+            # --- Data Table ---
+            st.subheader("Data Table")
+            st.dataframe(df, use_container_width=True)
+        """)
+
+        return template
+
+    # ------------------------------------------------------------------
+    # Monte Carlo chart helpers
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _plot_distribution(outcome: np.ndarray, stats: dict[str, float],
+                           chart_path: Path) -> None:
+        """Create a Plotly histogram of the outcome distribution with percentile lines."""
+        import plotly.graph_objects as go
+
+        fig = go.Figure()
+        fig.add_trace(go.Histogram(
+            x=outcome, nbinsx=100, name="Outcome",
+            marker_color="steelblue", opacity=0.75,
+        ))
+
+        colors = {"P5": "red", "P50": "green", "P95": "red"}
+        for label in ("P5", "P50", "P95"):
+            if label in stats:
+                fig.add_vline(
+                    x=stats[label],
+                    line_dash="dash",
+                    line_color=colors.get(label, "grey"),
+                    annotation_text=f"{label}: {stats[label]:,.0f}",
+                )
+
+        fig.update_layout(
+            title="Monte Carlo — Outcome Distribution",
+            xaxis_title="Outcome Value",
+            yaxis_title="Frequency",
+            template="plotly_white",
+            showlegend=False,
+        )
+        fig.write_html(str(chart_path))
+
+    @staticmethod
+    def _plot_tornado(sensitivities: dict[str, float],
+                      chart_path: Path) -> None:
+        """Create a horizontal bar (tornado) chart sorted by |correlation|."""
+        import plotly.graph_objects as go
+
+        sorted_items = sorted(
+            sensitivities.items(), key=lambda x: abs(x[1]),
+        )
+        names = [item[0] for item in sorted_items]
+        values = [item[1] for item in sorted_items]
+        colors = ["#2ecc71" if v >= 0 else "#e74c3c" for v in values]
+
+        fig = go.Figure(go.Bar(
+            x=values, y=names, orientation="h",
+            marker_color=colors,
+            text=[f"{v:.3f}" for v in values],
+            textposition="outside",
+        ))
+
+        fig.update_layout(
+            title="Sensitivity Analysis — Pearson Correlation with Outcome",
+            xaxis_title="Pearson Correlation",
+            yaxis_title="Input Variable",
+            template="plotly_white",
+            xaxis=dict(range=[-1.1, 1.1]),
+        )
+        fig.write_html(str(chart_path))
+
+    # ------------------------------------------------------------------
+    # SHAP helper
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _plot_shap_summary(feature_names: list[str],
+                           mean_abs_shap: np.ndarray,
+                           chart_path: Path) -> None:
+        """Create a Plotly bar chart of mean |SHAP| per feature."""
+        import plotly.graph_objects as go
+
+        order = np.argsort(mean_abs_shap)
+        sorted_names = [feature_names[i] for i in order]
+        sorted_vals = mean_abs_shap[order]
+
+        fig = go.Figure(go.Bar(
+            x=sorted_vals, y=sorted_names, orientation="h",
+            marker_color="mediumpurple",
+            text=[f"{v:.4f}" for v in sorted_vals],
+            textposition="outside",
+        ))
+
+        fig.update_layout(
+            title="SHAP Feature Importance — mean |SHAP value|",
+            xaxis_title="Mean |SHAP value|",
+            yaxis_title="Feature",
+            template="plotly_white",
+        )
+        fig.write_html(str(chart_path))
 
 
 if __name__ == "__main__":

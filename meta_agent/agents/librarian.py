@@ -342,7 +342,6 @@ class Librarian:
         if ext == ".csv":
             return pd.read_csv(path, nrows=nrows)
         elif ext in (".xlsx", ".xls"):
-            import openpyxl  # noqa: F401 — lazy import, needed by pandas
             return pd.read_excel(path, nrows=nrows)
         elif ext == ".parquet":
             df = pd.read_parquet(path)
