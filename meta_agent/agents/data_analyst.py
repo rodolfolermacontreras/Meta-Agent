@@ -51,7 +51,7 @@ class DataAnalyst:
             "ml": self.run_ml,
             "monte_carlo": self.run_monte_carlo,
             "eda": self.run_eda,
-            "dashboard": self.run_eda,   # dashboard starts with EDA
+            "dashboard": self.run_dashboard,
             "pipeline": self.run_eda,
         }
 
@@ -75,9 +75,9 @@ class DataAnalyst:
                      config: dict[str, Any] | None = None) -> dict[str, Any]:
         """Run a time-series forecast.
 
-        Produces a forecast CSV and an evaluation summary. If real data is
-        available in *data_dir*, uses it; otherwise generates a synthetic
-        series for demonstration.
+        Uses Prophet when available, falling back to exponential smoothing.
+        Produces a forecast CSV, an interactive Plotly chart, and evaluation
+        metrics.
 
         Args:
             data_dir: Directory containing raw/processed data.
@@ -87,41 +87,44 @@ class DataAnalyst:
         Returns:
             Summary dict with keys ``status``, ``outputs``, ``metrics``.
         """
+        config = config or {}
+        horizon = int(config.get("horizon", 12))
         df = self._load_or_generate_ts(data_dir)
 
-        # Simple exponential-smoothing baseline
-        train = df.iloc[: int(len(df) * 0.8)]
-        test = df.iloc[int(len(df) * 0.8):]
+        # Ensure date column is datetime
+        df["date"] = pd.to_datetime(df["date"])
+        df = df.sort_values("date").reset_index(drop=True)
 
-        alpha = 0.3
-        forecast_values = []
-        level = float(train["value"].iloc[0])
-        for val in train["value"]:
-            level = alpha * val + (1 - alpha) * level
-        for _ in range(len(test)):
-            forecast_values.append(level)
+        # Train / test split — last 20 %
+        split_idx = int(len(df) * 0.8)
+        train = df.iloc[:split_idx].copy()
+        test = df.iloc[split_idx:].copy()
 
-        test = test.copy()
-        test["forecast"] = forecast_values
-        test["lower_95"] = test["forecast"] - 1.96 * float(train["value"].std())
-        test["upper_95"] = test["forecast"] + 1.96 * float(train["value"].std())
+        try:
+            result = self._forecast_prophet(train, test, horizon)
+        except Exception:
+            # Fallback: exponential smoothing if Prophet is unavailable
+            result = self._forecast_exp_smoothing(train, test)
 
-        mae = float(np.mean(np.abs(test["value"] - test["forecast"])))
-        rmse = float(np.sqrt(np.mean((test["value"] - test["forecast"]) ** 2)))
+        forecast_df = result["forecast_df"]
+        metrics = result["metrics"]
 
-        # Save outputs
+        # --- Save outputs ---
         forecast_path = output_dir / "forecast.csv"
-        test.to_csv(forecast_path, index=False)
+        forecast_df.to_csv(forecast_path, index=False)
 
         eval_path = output_dir / "model_eval.csv"
-        pd.DataFrame([{"model": "exp_smoothing", "MAE": mae, "RMSE": rmse}]).to_csv(
-            eval_path, index=False
-        )
+        pd.DataFrame([metrics]).to_csv(eval_path, index=False)
+
+        # Plotly interactive chart
+        chart_path = output_dir / "forecast_chart.html"
+        self._plot_forecast(df, forecast_df, chart_path)
 
         return {
             "status": "complete",
-            "outputs": ["forecast.csv", "model_eval.csv"],
-            "metrics": {"MAE": round(mae, 4), "RMSE": round(rmse, 4)},
+            "outputs": ["forecast.csv", "model_eval.csv", "forecast_chart.html"],
+            "metrics": {k: round(v, 4) for k, v in metrics.items()
+                        if isinstance(v, (int, float))},
         }
 
     def run_ml(self, data_dir: Path, output_dir: Path,
@@ -139,6 +142,7 @@ class DataAnalyst:
         Returns:
             Summary dict.
         """
+        # Lazy imports — sklearn is heavy, only load when needed
         from sklearn.model_selection import train_test_split
         from sklearn.ensemble import RandomForestClassifier
         from sklearn.metrics import accuracy_score, f1_score
@@ -288,6 +292,75 @@ class DataAnalyst:
             "metrics": {"rows": df.shape[0], "columns": df.shape[1]},
         }
 
+    def run_dashboard(self, data_dir: Path, output_dir: Path,
+                      config: dict[str, Any] | None = None) -> dict[str, Any]:
+        """Generate a ready-to-run Streamlit dashboard for the project data.
+
+        Produces ``outputs/dashboard/app.py``, a requirements file, and a
+        README with run instructions.
+
+        Args:
+            data_dir: Directory containing raw/processed data.
+            output_dir: Where to write outputs.
+            config: Optional configuration.
+
+        Returns:
+            Summary dict.
+        """
+        df = self._load_first_csv(data_dir)
+        if df is None:
+            df = self._generate_sample_data()
+
+        # Detect columns
+        numeric_cols = list(df.select_dtypes(include=["number"]).columns)
+        date_col = None
+        for col in df.columns:
+            if col.lower() in ("date", "timestamp", "datetime", "ds"):
+                date_col = col
+                break
+
+        dashboard_dir = output_dir / "dashboard"
+        dashboard_dir.mkdir(parents=True, exist_ok=True)
+
+        # Write the Streamlit app
+        app_code = self._generate_streamlit_app(
+            numeric_cols=numeric_cols,
+            date_col=date_col,
+            all_cols=list(df.columns),
+        )
+        (dashboard_dir / "app.py").write_text(app_code, encoding="utf-8")
+
+        # Save data for the dashboard to read
+        df.to_csv(dashboard_dir / "data.csv", index=False)
+
+        # requirements.txt
+        (dashboard_dir / "requirements.txt").write_text(
+            "streamlit>=1.30\npandas>=2.0\nplotly>=5.0\n",
+            encoding="utf-8",
+        )
+
+        # README
+        (dashboard_dir / "README.md").write_text(
+            "# Dashboard\n\n"
+            "## How to run\n\n"
+            "```bash\n"
+            "pip install -r requirements.txt\n"
+            "streamlit run app.py\n"
+            "```\n",
+            encoding="utf-8",
+        )
+
+        return {
+            "status": "complete",
+            "outputs": [
+                "dashboard/app.py",
+                "dashboard/data.csv",
+                "dashboard/requirements.txt",
+                "dashboard/README.md",
+            ],
+            "metrics": {"rows": df.shape[0], "columns": df.shape[1]},
+        }
+
     # ------------------------------------------------------------------
     # Helpers
     # ------------------------------------------------------------------
@@ -367,6 +440,156 @@ class DataAnalyst:
             f"- Synthetic/demo data used if real data was unavailable\n"
         )
         (output_dir / "findings.md").write_text(content, encoding="utf-8")
+
+    # ------------------------------------------------------------------
+    # Forecasting helpers
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _forecast_prophet(train: pd.DataFrame, test: pd.DataFrame,
+                          horizon: int) -> dict[str, Any]:
+        """Fit Prophet and produce forecast + metrics.
+
+        Raises ImportError if prophet is not installed.
+        """
+        from prophet import Prophet  # lazy import
+
+        prophet_train = train.rename(columns={"date": "ds", "value": "y"})
+        model = Prophet(yearly_seasonality=True, weekly_seasonality=False,
+                        daily_seasonality=False)
+        model.fit(prophet_train)
+
+        # Predict on test dates
+        future_test = test[["date"]].rename(columns={"date": "ds"})
+        pred_test = model.predict(future_test)
+
+        actuals = test["value"].values
+        predicted = pred_test["yhat"].values
+        mae = float(np.mean(np.abs(actuals - predicted)))
+        rmse = float(np.sqrt(np.mean((actuals - predicted) ** 2)))
+        mape = float(np.mean(np.abs((actuals - predicted) / actuals)) * 100)
+
+        # Forecast into the future
+        future = model.make_future_dataframe(periods=horizon, freq="MS")
+        forecast_full = model.predict(future)
+        forecast_df = forecast_full[["ds", "yhat", "yhat_lower", "yhat_upper"]].copy()
+        forecast_df = forecast_df.rename(columns={"ds": "date"})
+
+        return {
+            "forecast_df": forecast_df,
+            "metrics": {"model": "prophet", "MAE": mae, "RMSE": rmse, "MAPE": mape},
+        }
+
+    @staticmethod
+    def _forecast_exp_smoothing(train: pd.DataFrame,
+                                test: pd.DataFrame) -> dict[str, Any]:
+        """Simple exponential smoothing fallback."""
+        alpha = 0.3
+        level = float(train["value"].iloc[0])
+        for val in train["value"]:
+            level = alpha * val + (1 - alpha) * level
+
+        forecast_values = [level] * len(test)
+        std = float(train["value"].std())
+
+        forecast_df = test[["date"]].copy()
+        forecast_df["yhat"] = forecast_values
+        forecast_df["yhat_lower"] = forecast_df["yhat"] - 1.96 * std
+        forecast_df["yhat_upper"] = forecast_df["yhat"] + 1.96 * std
+
+        actuals = test["value"].values
+        predicted = np.array(forecast_values)
+        mae = float(np.mean(np.abs(actuals - predicted)))
+        rmse = float(np.sqrt(np.mean((actuals - predicted) ** 2)))
+
+        return {
+            "forecast_df": forecast_df,
+            "metrics": {"model": "exp_smoothing", "MAE": mae, "RMSE": rmse},
+        }
+
+    @staticmethod
+    def _plot_forecast(original: pd.DataFrame, forecast_df: pd.DataFrame,
+                       chart_path: Path) -> None:
+        """Create an interactive Plotly chart of actuals + forecast + CI."""
+        import plotly.graph_objects as go
+
+        fig = go.Figure()
+
+        # Actuals
+        fig.add_trace(go.Scatter(
+            x=original["date"], y=original["value"],
+            mode="lines+markers", name="Actuals",
+            line=dict(color="steelblue"),
+        ))
+
+        # Forecast
+        fig.add_trace(go.Scatter(
+            x=forecast_df["date"], y=forecast_df["yhat"],
+            mode="lines", name="Forecast",
+            line=dict(color="tomato", dash="dash"),
+        ))
+
+        # Confidence interval
+        fig.add_trace(go.Scatter(
+            x=pd.concat([forecast_df["date"], forecast_df["date"][::-1]]),
+            y=pd.concat([forecast_df["yhat_upper"], forecast_df["yhat_lower"][::-1]]),
+            fill="toself", fillcolor="rgba(255,99,71,0.15)",
+            line=dict(color="rgba(255,255,255,0)"),
+            name="95% CI",
+        ))
+
+        fig.update_layout(
+            title="Forecast — Actuals vs Predicted",
+            xaxis_title="Date", yaxis_title="Value",
+            template="plotly_white",
+        )
+        fig.write_html(str(chart_path))
+
+    @staticmethod
+    def _generate_streamlit_app(numeric_cols: list[str],
+                                date_col: str | None,
+                                all_cols: list[str]) -> str:
+        """Return the source code for a Streamlit dashboard app."""
+        num_repr = repr(numeric_cols[:5])
+        date_repr = repr(date_col)
+        return f'''"""Auto-generated Streamlit dashboard."""
+
+import streamlit as st
+import pandas as pd
+import plotly.express as px
+from pathlib import Path
+
+st.set_page_config(page_title="Project Dashboard", layout="wide")
+st.title("📊 Project Dashboard")
+
+data_path = Path(__file__).parent / "data.csv"
+df = pd.read_csv(data_path)
+
+# --- KPI Row ---
+numeric_cols = {num_repr}
+cols = st.columns(len(numeric_cols[:4]) or 1)
+for i, col_name in enumerate(numeric_cols[:4]):
+    with cols[i]:
+        st.metric(col_name, f"{{df[col_name].mean():.2f}}", f"max: {{df[col_name].max():.2f}}")
+
+# --- Time Series (if date column found) ---
+date_col = {date_repr}
+if date_col and date_col in df.columns:
+    df[date_col] = pd.to_datetime(df[date_col])
+    ts_col = st.selectbox("Metric for time series", numeric_cols, index=0)
+    fig_ts = px.line(df.sort_values(date_col), x=date_col, y=ts_col, title=f"{{ts_col}} over time")
+    st.plotly_chart(fig_ts, use_container_width=True)
+
+# --- Distribution ---
+if numeric_cols:
+    dist_col = st.selectbox("Distribution column", numeric_cols, index=0, key="dist")
+    fig_dist = px.histogram(df, x=dist_col, title=f"Distribution of {{dist_col}}")
+    st.plotly_chart(fig_dist, use_container_width=True)
+
+# --- Data Table ---
+st.subheader("Data Table")
+st.dataframe(df, use_container_width=True)
+'''
 
 
 if __name__ == "__main__":
