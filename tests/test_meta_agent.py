@@ -468,3 +468,111 @@ class TestDashboardGenerator:
 
         assert result["status"] == "complete"
         assert (output_dir / "dashboard" / "app.py").exists()
+
+
+# ── Monte Carlo Outputs ──────────────────────────────────────────────
+
+
+class TestMonteCarloOutputs:
+    """Tests for the upgraded run_monte_carlo."""
+
+    def test_monte_carlo_outputs(self, workspace: Path) -> None:
+        """Verify all MC outputs: stats, distribution chart, tornado chart."""
+        analyst = DataAnalyst(workspace=workspace)
+        data_dir = workspace / "projects" / "test-project" / "data"
+        data_dir.mkdir(parents=True, exist_ok=True)
+        output_dir = workspace / "projects" / "test-project" / "outputs"
+        output_dir.mkdir(parents=True, exist_ok=True)
+
+        result = analyst.run_monte_carlo(
+            data_dir=data_dir, output_dir=output_dir, config={},
+        )
+
+        assert result["status"] == "complete"
+        assert (output_dir / "simulation_results.csv").exists()
+        assert (output_dir / "simulation_stats.csv").exists()
+        assert (output_dir / "distribution_chart.html").exists()
+        assert (output_dir / "tornado_chart.html").exists()
+
+        # Verify chart files are valid HTML
+        dist_html = (output_dir / "distribution_chart.html").read_text(encoding="utf-8")
+        assert "plotly" in dist_html.lower()
+        tornado_html = (output_dir / "tornado_chart.html").read_text(encoding="utf-8")
+        assert "plotly" in tornado_html.lower()
+
+    def test_monte_carlo_percentiles(self, workspace: Path) -> None:
+        """Verify P5 < P50 < P95 in simulation stats."""
+        analyst = DataAnalyst(workspace=workspace)
+        data_dir = workspace / "projects" / "test-project" / "data"
+        data_dir.mkdir(parents=True, exist_ok=True)
+        output_dir = workspace / "projects" / "test-project" / "outputs"
+        output_dir.mkdir(parents=True, exist_ok=True)
+
+        analyst.run_monte_carlo(
+            data_dir=data_dir, output_dir=output_dir, config={},
+        )
+
+        stats_df = pd.read_csv(output_dir / "simulation_stats.csv")
+        assert stats_df["P5"].iloc[0] < stats_df["P50"].iloc[0]
+        assert stats_df["P50"].iloc[0] < stats_df["P95"].iloc[0]
+        assert stats_df["P10"].iloc[0] < stats_df["P90"].iloc[0]
+
+
+# ── SHAP in ML Pipeline ─────────────────────────────────────────────
+
+
+class TestMLWithShap:
+    """Tests for SHAP integration in run_ml."""
+
+    def test_ml_with_shap(self, workspace: Path) -> None:
+        """Verify run_ml produces shap_summary.html when shap is installed."""
+        analyst = DataAnalyst(workspace=workspace)
+        data_dir = workspace / "projects" / "test-project" / "data"
+        data_dir.mkdir(parents=True, exist_ok=True)
+        output_dir = workspace / "projects" / "test-project" / "outputs"
+        output_dir.mkdir(parents=True, exist_ok=True)
+
+        result = analyst.run_ml(
+            data_dir=data_dir, output_dir=output_dir, config={},
+        )
+
+        assert result["status"] == "complete"
+        assert "predictions.csv" in result["outputs"]
+        assert "model_eval.csv" in result["outputs"]
+
+        # SHAP is optional — check if installed
+        try:
+            import shap  # noqa: F401
+            assert (output_dir / "shap_summary.html").exists()
+            assert "shap_summary.html" in result["outputs"]
+            html = (output_dir / "shap_summary.html").read_text(encoding="utf-8")
+            assert "plotly" in html.lower()
+        except ImportError:
+            assert "shap_summary.html" not in result["outputs"]
+
+
+# ── Dashboard Date Slider ────────────────────────────────────────────
+
+
+class TestDashboardDateSlider:
+    """Tests for date range slider in generated dashboard."""
+
+    def test_dashboard_date_slider(self, workspace: Path) -> None:
+        """Verify generated app.py contains st.date_input when date col exists."""
+        analyst = DataAnalyst(workspace=workspace)
+        data_dir = workspace / "projects" / "test-project" / "data"
+        raw_dir = data_dir / "raw"
+        raw_dir.mkdir(parents=True, exist_ok=True)
+        output_dir = workspace / "projects" / "test-project" / "outputs"
+        output_dir.mkdir(parents=True, exist_ok=True)
+
+        # Use sample_sales.csv which has a 'date' column
+        shutil.copy(FIXTURES_DIR / "sample_sales.csv", raw_dir / "sample_sales.csv")
+
+        analyst.run_dashboard(
+            data_dir=data_dir, output_dir=output_dir, config={},
+        )
+
+        app_code = (output_dir / "dashboard" / "app.py").read_text(encoding="utf-8")
+        assert "st.date_input" in app_code
+        assert "Date range" in app_code
