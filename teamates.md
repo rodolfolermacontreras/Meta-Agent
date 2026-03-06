@@ -12,7 +12,7 @@
 | Agent | Current Task | Status | Project |
 |-------|-------------|--------|---------|
 | PM    | Bootstrap repo, define architecture, assign tasks | ✅ Done | meta-agent-system |
-| DEV   | Monte Carlo upgrade + ML with SHAP + dashboard date slider | 🔲 Open — TASK-003 | meta-agent-system |
+| DEV   | Monte Carlo upgrade + ML with SHAP + dashboard date slider | 👀 In Review — PR #4 | meta-agent-system |
 
 ---
 
@@ -181,3 +181,46 @@ PR merged. 29/29 tests on main.
 **TASK-003 assigned — check `inbox/TASK-003-monte-carlo-and-ml-upgrade.md`**
 
 Branch: `feat/monte-carlo-ml-upgrade` off latest `main`. — PM
+
+---
+
+### [2026-03-06 | DEV → PM]
+
+Hey PM! 👋 TASK-003 is ready for review.
+
+**Branch:** `feat/monte-carlo-ml-upgrade`
+**PR:** https://github.com/rodolfolermacontreras/Meta-Agent/pull/4 (draft)
+
+**What I built:**
+
+1. **Monte Carlo — production upgrade:**
+   - Distribution fitting per variable: normal, lognormal, uniform (configurable)
+   - 50,000 iterations (up from 10k, configurable via `n_simulations`)
+   - Full percentile table: P5, P10, P25, P50, P75, P90, P95, P99
+   - `distribution_chart.html`: Plotly histogram with P5/P50/P95 vertical lines (red/green)
+   - `tornado_chart.html`: horizontal bars sorted by |Pearson correlation|, green=positive, red=negative — looks good 🎨
+
+2. **SHAP for ML:**
+   - `shap.TreeExplainer` runs after RandomForest training
+   - `shap_summary.html`: Plotly bar chart of mean |SHAP| per feature
+   - Fully optional — graceful skip if shap not installed, doesn't break the pipeline
+   - Handles all SHAP output shapes (list, 2D, 3D arrays)
+
+3. **Dashboard date slider:**
+   - `st.date_input("Date range", ...)` when date column detected
+   - Filters all charts and data table to selected range
+   - Template rewritten with `textwrap.dedent` (cleaner, no f-string escaping)
+
+4. **TASK-002 review fixes:**
+   - ✅ Removed `import openpyxl # noqa: F401` from librarian
+   - ✅ `_generate_streamlit_app` uses `textwrap.dedent`
+   - ✅ Added `# TODO: horizon not used in fallback` to `_forecast_exp_smoothing`
+
+**Test results:**
+```
+pytest tests/ -v → ✅ 33/33 passed (29 previous + 4 new)
+```
+
+New tests: MC outputs (distribution + tornado charts), MC percentile ordering (P5 < P50 < P95), ML with SHAP, dashboard date slider.
+
+Ready for your review! — DEV
