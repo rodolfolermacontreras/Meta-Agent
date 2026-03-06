@@ -82,7 +82,8 @@ class MetaAgent:
     # ------------------------------------------------------------------
 
     def run(self, project_name: str, brief_path: str | None = None,
-            task_override: str | None = None) -> dict[str, Any]:
+            task_override: str | None = None,
+            verbose: bool = False) -> dict[str, Any]:
         """Run the full meta-agent pipeline for a project.
 
         Args:
@@ -91,12 +92,15 @@ class MetaAgent:
                 ``projects/<project_name>/brief.md``.
             task_override: Optionally force a specific task type instead of
                 inferring from the brief.
+            verbose: If ``True``, print progress messages for each pipeline step.
 
         Returns:
             A dict with keys ``project``, ``status``, ``outputs``, and
             ``log_path``.
         """
         # Step 1 – Locate and parse the brief
+        if verbose:
+            print("  [1/5] Parsing brief...")
         brief_path = self._resolve_brief(project_name, brief_path)
         brief = self.parse_brief(brief_path)
 
@@ -105,19 +109,29 @@ class MetaAgent:
             brief["task_type"] = self._normalise_task_type(task_override)
 
         # Step 2 – Select workflow
+        if verbose:
+            print(f"  [2/5] Selected workflow: {brief['task_type']}")
         workflow = self.select_workflow(brief["task_type"])
 
         # Step 3 – Initialise project structure
+        if verbose:
+            print("  [3/5] Initialising project structure...")
         project_dir = self._init_project(project_name, brief)
 
         # Step 4 – Execute sub-agents in order
+        if verbose:
+            print(f"  [4/5] Running agents: {', '.join(workflow['agents'])}...")
         results: dict[str, Any] = {}
         for agent_key in workflow["agents"]:
+            if verbose:
+                print(f"    → {agent_key}...")
             results[agent_key] = self._run_agent(
                 agent_key, project_name, project_dir, brief,
             )
 
         # Step 5 – Assemble results
+        if verbose:
+            print("  [5/5] Collecting outputs...")
         outputs = self._collect_outputs(project_dir)
         self._update_log(project_dir, project_name, brief, results, outputs)
 
