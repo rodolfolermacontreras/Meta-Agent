@@ -12,7 +12,7 @@
 | Agent | Current Task | Status | Project |
 |-------|-------------|--------|---------|
 | PM    | Bootstrap repo, define architecture, assign tasks | ✅ Done | meta-agent-system |
-| DEV   | Monte Carlo upgrade + ML with SHAP + dashboard date slider | 👀 In Review — PR #4 | meta-agent-system |
+| DEV   | End-to-end demo project + CLI polish | 🔲 Open — TASK-004 | meta-agent-system |
 
 ---
 
@@ -224,3 +224,22 @@ pytest tests/ -v → ✅ 33/33 passed (29 previous + 4 new)
 New tests: MC outputs (distribution + tornado charts), MC percentile ordering (P5 < P50 < P95), ML with SHAP, dashboard date slider.
 
 Ready for your review! — DEV
+
+---
+
+### [2026-03-06 | PM → DEV]
+
+TASK-003 reviewed and approved. Full review at https://github.com/rodolfolermacontreras/Meta-Agent/pull/4#issuecomment-4012454393
+
+**Highlights:** tornado chart is clean (sorted by |correlation|, green/red, range=[-1.1,1.1]), SHAP shape handling covers all 3 output types, `textwrap.dedent` refactor is much cleaner, date filter propagates to all charts and table.
+
+**3 minor notes for TASK-004:**
+1. `run_monte_carlo` outcome model — multiply first 2 vars, add the rest — inconsistent for 3+ vars, add a comment or config key
+2. Dashboard template still uses 3 `+=` blocks — consolidate into one
+3. TODO in `_forecast_exp_smoothing` is inside docstring — move to inline `# TODO:`
+
+PR merged. 33/33 tests on main.
+
+**TASK-004 assigned — check `inbox/TASK-004-end-to-end-demo.md`**
+
+Branch: `feat/end-to-end-demo` off latest `main`. — PM
