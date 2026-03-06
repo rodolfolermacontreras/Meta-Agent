@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import shutil
 import tempfile
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 import pytest
 
@@ -12,6 +14,8 @@ from meta_agent.orchestrator import MetaAgent, WORKFLOW_MAP
 from meta_agent.agents.data_analyst import DataAnalyst
 from meta_agent.agents.librarian import Librarian
 from meta_agent.agents.knowledge_curator import KnowledgeCurator
+
+FIXTURES_DIR = Path(__file__).parent / "fixtures"
 
 
 # ── Fixtures ──────────────────────────────────────────────────────────
@@ -308,3 +312,159 @@ class TestCLI:
                 "--project", "nonexistent",
                 "--workspace", str(workspace),
             ])
+
+
+# ── Real File Loading (Librarian) ────────────────────────────────────
+
+
+class TestLibrarianRealFiles:
+    """Tests for Librarian loading real file formats."""
+
+    def test_librarian_loads_csv(self, workspace: Path) -> None:
+        """Load a real CSV fixture and verify profile shape."""
+        lib = Librarian(workspace=workspace)
+        data_dir = workspace / "projects" / "test-project" / "data"
+        raw_dir = data_dir / "raw"
+        raw_dir.mkdir(parents=True, exist_ok=True)
+
+        shutil.copy(FIXTURES_DIR / "sample_sales.csv", raw_dir / "sample_sales.csv")
+        profiles = lib.catalog_sources([], data_dir)
+
+        assert len(profiles) >= 1
+        csv_profile = next(p for p in profiles if p["name"] == "sample_sales")
+        assert csv_profile["format"] == "CSV"
+        assert csv_profile["shape"][0] == 36
+        assert csv_profile["shape"][1] == 2
+        assert "date" in csv_profile["columns"]
+        assert "value" in csv_profile["columns"]
+
+    def test_librarian_loads_excel(self, workspace: Path) -> None:
+        """Load a real Excel fixture and verify profile shape."""
+        lib = Librarian(workspace=workspace)
+        data_dir = workspace / "projects" / "test-project" / "data"
+        raw_dir = data_dir / "raw"
+        raw_dir.mkdir(parents=True, exist_ok=True)
+
+        shutil.copy(
+            FIXTURES_DIR / "sample_classification.xlsx",
+            raw_dir / "sample_classification.xlsx",
+        )
+        profiles = lib.catalog_sources([], data_dir)
+
+        xlsx_profile = next(p for p in profiles if p["name"] == "sample_classification")
+        assert xlsx_profile["format"] == "Excel"
+        assert xlsx_profile["shape"][0] == 100
+        assert xlsx_profile["shape"][1] == 4
+        assert "target" in xlsx_profile["columns"]
+
+    def test_librarian_loads_parquet(self, workspace: Path) -> None:
+        """Load a Parquet fixture and verify profile."""
+        lib = Librarian(workspace=workspace)
+        data_dir = workspace / "projects" / "test-project" / "data"
+        raw_dir = data_dir / "raw"
+        raw_dir.mkdir(parents=True, exist_ok=True)
+
+        shutil.copy(FIXTURES_DIR / "sample_ts.parquet", raw_dir / "sample_ts.parquet")
+        profiles = lib.catalog_sources([], data_dir)
+
+        pq_profile = next(p for p in profiles if p["name"] == "sample_ts")
+        assert pq_profile["format"] == "Parquet"
+        assert pq_profile["shape"][0] == 60
+
+    def test_librarian_loads_json(self, workspace: Path) -> None:
+        """Load a JSON fixture and verify profile."""
+        lib = Librarian(workspace=workspace)
+        data_dir = workspace / "projects" / "test-project" / "data"
+        raw_dir = data_dir / "raw"
+        raw_dir.mkdir(parents=True, exist_ok=True)
+
+        shutil.copy(FIXTURES_DIR / "sample_data.json", raw_dir / "sample_data.json")
+        profiles = lib.catalog_sources([], data_dir)
+
+        json_profile = next(p for p in profiles if p["name"] == "sample_data")
+        assert json_profile["format"] == "JSON"
+        assert json_profile["shape"][0] == 50
+
+
+# ── Prophet Forecast ─────────────────────────────────────────────────
+
+
+class TestForecastWithRealData:
+    """Tests for run_forecast with real data fixtures."""
+
+    def test_forecast_with_real_csv(self, workspace: Path) -> None:
+        """Run forecast on real fixture data, verify outputs."""
+        analyst = DataAnalyst(workspace=workspace)
+        data_dir = workspace / "projects" / "test-project" / "data"
+        raw_dir = data_dir / "raw"
+        raw_dir.mkdir(parents=True, exist_ok=True)
+        output_dir = workspace / "projects" / "test-project" / "outputs"
+        output_dir.mkdir(parents=True, exist_ok=True)
+
+        shutil.copy(FIXTURES_DIR / "sample_sales.csv", raw_dir / "sample_sales.csv")
+
+        result = analyst.run_forecast(
+            data_dir=data_dir, output_dir=output_dir, config={},
+        )
+
+        assert result["status"] == "complete"
+        assert (output_dir / "forecast.csv").exists()
+        assert (output_dir / "forecast_chart.html").exists()
+        assert (output_dir / "model_eval.csv").exists()
+
+        # Verify forecast CSV has expected columns
+        fc = pd.read_csv(output_dir / "forecast.csv")
+        assert "date" in fc.columns
+        assert "yhat" in fc.columns
+
+        # Verify chart is valid HTML
+        html = (output_dir / "forecast_chart.html").read_text(encoding="utf-8")
+        assert "<html>" in html.lower() or "plotly" in html.lower()
+
+
+# ── Dashboard Generator ──────────────────────────────────────────────
+
+
+class TestDashboardGenerator:
+    """Tests for run_dashboard."""
+
+    def test_dashboard_generates_app(self, workspace: Path) -> None:
+        """Verify dashboard produces a runnable app.py."""
+        analyst = DataAnalyst(workspace=workspace)
+        data_dir = workspace / "projects" / "test-project" / "data"
+        raw_dir = data_dir / "raw"
+        raw_dir.mkdir(parents=True, exist_ok=True)
+        output_dir = workspace / "projects" / "test-project" / "outputs"
+        output_dir.mkdir(parents=True, exist_ok=True)
+
+        shutil.copy(FIXTURES_DIR / "sample_sales.csv", raw_dir / "sample_sales.csv")
+
+        result = analyst.run_dashboard(
+            data_dir=data_dir, output_dir=output_dir, config={},
+        )
+
+        assert result["status"] == "complete"
+        assert (output_dir / "dashboard" / "app.py").exists()
+        assert (output_dir / "dashboard" / "requirements.txt").exists()
+        assert (output_dir / "dashboard" / "README.md").exists()
+        assert (output_dir / "dashboard" / "data.csv").exists()
+
+        # Verify app.py contains streamlit imports
+        app_code = (output_dir / "dashboard" / "app.py").read_text(encoding="utf-8")
+        assert "import streamlit" in app_code
+        assert "st.title" in app_code
+
+    def test_dashboard_with_generated_data(self, workspace: Path) -> None:
+        """Dashboard works even without real data (synthetic fallback)."""
+        analyst = DataAnalyst(workspace=workspace)
+        data_dir = workspace / "projects" / "test-project" / "data"
+        data_dir.mkdir(parents=True, exist_ok=True)
+        output_dir = workspace / "projects" / "test-project" / "outputs"
+        output_dir.mkdir(parents=True, exist_ok=True)
+
+        result = analyst.run_dashboard(
+            data_dir=data_dir, output_dir=output_dir, config={},
+        )
+
+        assert result["status"] == "complete"
+        assert (output_dir / "dashboard" / "app.py").exists()
