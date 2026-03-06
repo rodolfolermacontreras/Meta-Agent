@@ -1,0 +1,2 @@
+model,accuracy,f1_weighted
+random_forest,0.78,0.7471096345514949

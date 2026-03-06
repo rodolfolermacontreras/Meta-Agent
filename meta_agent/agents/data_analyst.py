@@ -281,6 +281,8 @@ class DataAnalyst:
                 samples[name] = rng.normal(mean, std, n_simulations)
 
         # --- Compute outcome ---
+        # Outcome model: first two variables are multiplied (e.g., price × quantity),
+        # remaining variables are added.  Override via config["model"] in the future.
         if len(samples) >= 2:
             keys = list(samples.keys())
             outcome = samples[keys[0]] * samples[keys[1]]
@@ -563,11 +565,8 @@ class DataAnalyst:
     @staticmethod
     def _forecast_exp_smoothing(train: pd.DataFrame,
                                 test: pd.DataFrame) -> dict[str, Any]:
-        """Simple exponential smoothing fallback.
-
-        # TODO: horizon not used in exp-smoothing fallback — forecast only
-        # covers test period, not future periods beyond the data.
-        """
+        """Simple exponential smoothing fallback."""
+        # TODO: horizon not used — forecast covers test period only, not future periods.
         alpha = 0.3
         level = float(train["value"].iloc[0])
         for val in train["value"]:
@@ -674,46 +673,46 @@ class DataAnalyst:
         else:
             date_block = ""
 
-        template = textwrap.dedent(f"""\
-            \"\"\"Auto-generated Streamlit dashboard.\"\"\"
+        template = (
+            textwrap.dedent(f"""\
+                \"\"\"Auto-generated Streamlit dashboard.\"\"\"
 
-            import streamlit as st
-            import pandas as pd
-            import plotly.express as px
-            from pathlib import Path
+                import streamlit as st
+                import pandas as pd
+                import plotly.express as px
+                from pathlib import Path
 
-            st.set_page_config(page_title="Project Dashboard", layout="wide")
-            st.title("📊 Project Dashboard")
+                st.set_page_config(page_title="Project Dashboard", layout="wide")
+                st.title("📊 Project Dashboard")
 
-            data_path = Path(__file__).parent / "data.csv"
-            df = pd.read_csv(data_path)
+                data_path = Path(__file__).parent / "data.csv"
+                df = pd.read_csv(data_path)
 
-            # --- KPI Row ---
-            numeric_cols = {num_repr}
-            cols = st.columns(len(numeric_cols[:4]) or 1)
-            for i, col_name in enumerate(numeric_cols[:4]):
-                with cols[i]:
-                    st.metric(
-                        col_name,
-                        f"{{df[col_name].mean():.2f}}",
-                        f"max: {{df[col_name].max():.2f}}",
-                    )
+                # --- KPI Row ---
+                numeric_cols = {num_repr}
+                cols = st.columns(len(numeric_cols[:4]) or 1)
+                for i, col_name in enumerate(numeric_cols[:4]):
+                    with cols[i]:
+                        st.metric(
+                            col_name,
+                            f"{{df[col_name].mean():.2f}}",
+                            f"max: {{df[col_name].max():.2f}}",
+                        )
 
-        """)
+            """)
+            + date_block
+            + textwrap.dedent(f"""\
+                # --- Distribution ---
+                if numeric_cols:
+                    dist_col = st.selectbox("Distribution column", numeric_cols, index=0, key="dist")
+                    fig_dist = px.histogram(df, x=dist_col, title=f"Distribution of {{dist_col}}")
+                    st.plotly_chart(fig_dist, use_container_width=True)
 
-        template += date_block
-
-        template += textwrap.dedent(f"""\
-            # --- Distribution ---
-            if numeric_cols:
-                dist_col = st.selectbox("Distribution column", numeric_cols, index=0, key="dist")
-                fig_dist = px.histogram(df, x=dist_col, title=f"Distribution of {{dist_col}}")
-                st.plotly_chart(fig_dist, use_container_width=True)
-
-            # --- Data Table ---
-            st.subheader("Data Table")
-            st.dataframe(df, use_container_width=True)
-        """)
+                # --- Data Table ---
+                st.subheader("Data Table")
+                st.dataframe(df, use_container_width=True)
+            """)
+        )
 
         return template
 
