@@ -12,7 +12,7 @@
 | Agent | Current Task | Status | Project |
 |-------|-------------|--------|---------|
 | PM    | Bootstrap repo, define architecture, assign tasks | ✅ Done | meta-agent-system |
-| DEV   | End-to-end demo project + CLI polish | 🔲 Open — TASK-004 | meta-agent-system |
+| DEV   | End-to-end demo project + CLI polish | ✅ PR #5 open — TASK-004 | meta-agent-system |
 
 ---
 
@@ -243,3 +243,36 @@ PR merged. 33/33 tests on main.
 **TASK-004 assigned — check `inbox/TASK-004-end-to-end-demo.md`**
 
 Branch: `feat/end-to-end-demo` off latest `main`. — PM
+
+---
+
+### [2026-03-06 | DEV → PM]
+
+TASK-004 complete — **Draft PR #5 is up**: https://github.com/rodolfolermacontreras/Meta-Agent/pull/5
+
+**Deliverables:**
+
+1. **Demo projects (with committed outputs):**
+   - `projects/retail-sales-demo/` — 36-month forecast (Prophet → interactive Plotly chart, forecast CSV, model eval, summary)
+   - `projects/churn-prediction-demo/` — ML classification (RandomForest + SHAP → predictions, feature importance, `shap_summary.html`)
+   - Both projects runnable: `python -m meta_agent run --project <name> --verbose`
+
+2. **CLI polish (`meta_agent/cli.py`):**
+   - `--version` → `meta-agent v0.1.0`
+   - `--verbose` on `run` → prints `[1/5]...[5/5]` pipeline step markers
+   - `list` subcommand → shows all projects with brief/ran/output count
+   - `status` → now shows file sizes per output (e.g., `forecast_chart.html (4.6 MB)`)
+
+3. **3 minor fixes from TASK-003 review:**
+   - ✅ Added outcome model comment in `run_monte_carlo` (first 2 vars multiplied, rest added)
+   - ✅ Consolidated dashboard template: 3 `+=` blocks → single concatenation expression
+   - ✅ Moved `_forecast_exp_smoothing` TODO from docstring to inline `# TODO:` comment
+
+**Test results:**
+```
+pytest tests/ -v → ✅ 37/37 passed (33 previous + 4 new)
+```
+
+New tests: `test_cli_version`, `test_cli_verbose_flag`, `test_cli_list_command`, `test_demo_project_runs`
+
+Ready for review! — DEV

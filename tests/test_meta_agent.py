@@ -576,3 +576,80 @@ class TestDashboardDateSlider:
         app_code = (output_dir / "dashboard" / "app.py").read_text(encoding="utf-8")
         assert "st.date_input" in app_code
         assert "Date range" in app_code
+
+
+# ── CLI Extensions (TASK-004) ────────────────────────────────────────
+
+
+class TestCLIExtensions:
+    """Tests for --version, --verbose, and list subcommand."""
+
+    def test_cli_version(self, capsys) -> None:
+        """--version prints the version string and exits."""
+        from meta_agent.cli import main
+
+        with pytest.raises(SystemExit) as exc_info:
+            main(["--version"])
+        assert exc_info.value.code == 0
+        captured = capsys.readouterr()
+        assert "meta-agent v" in captured.out
+
+    def test_cli_verbose_flag(self, workspace: Path, capsys) -> None:
+        """--verbose prints pipeline step markers."""
+        from meta_agent.cli import main
+
+        main([
+            "run",
+            "--project", "test-project",
+            "--workspace", str(workspace),
+            "--verbose",
+        ])
+        captured = capsys.readouterr()
+        assert "[1/5]" in captured.out
+        assert "[5/5]" in captured.out
+
+    def test_cli_list_command(self, workspace: Path, capsys) -> None:
+        """list subcommand shows projects."""
+        from meta_agent.cli import main
+
+        main(["list", "--workspace", str(workspace)])
+        captured = capsys.readouterr()
+        assert "test-project" in captured.out
+        assert "Brief: Yes" in captured.out
+
+
+# ── Demo Project Smoke Test (TASK-004) ───────────────────────────────
+
+
+class TestDemoProjects:
+    """Verify demo projects can run end-to-end."""
+
+    def test_demo_project_runs(self, tmp_path: Path) -> None:
+        """Run a forecast project end-to-end on synthetic data."""
+        project_dir = tmp_path / "projects" / "demo"
+        project_dir.mkdir(parents=True)
+        data_raw = project_dir / "data" / "raw"
+        data_raw.mkdir(parents=True)
+
+        brief = (
+            "# Demo Brief\n\n"
+            "**Objective:** Forecast sales\n\n"
+            "**Task type:** Forecast\n\n"
+            "**Data sources:**\n- projects/demo/data/raw/demo.csv\n\n"
+            "**Deliverables:**\n- Forecast CSV\n\n"
+            "**Priority:** High\n"
+        )
+        (project_dir / "brief.md").write_text(brief, encoding="utf-8")
+
+        dates = pd.date_range("2023-01-01", periods=36, freq="MS")
+        vals = np.linspace(100, 200, 36) + np.random.default_rng(1).normal(0, 5, 36)
+        pd.DataFrame({"date": dates.strftime("%Y-%m-%d"), "value": vals.round(2)}).to_csv(
+            data_raw / "demo.csv", index=False,
+        )
+
+        agent = MetaAgent(workspace=tmp_path)
+        result = agent.run("demo")
+
+        assert result["status"] == "complete"
+        assert "forecast.csv" in result["outputs"]
+        assert "forecast_chart.html" in result["outputs"]
